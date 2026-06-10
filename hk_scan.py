@@ -18,44 +18,63 @@ EMAIL_TO       = os.environ.get("EMAIL_TO", "")
 
 def get_hk_symbols():
     print("Fetching Hong Kong stock list...")
-    all_symbols = []
+    all_syms = set()
 
-    # HK stocks on Yahoo Finance use .HK suffix
-    # HKEX lists ~2500+ stocks — numeric codes 0001 to 9999
-    # Common range: 0001-4999 (main board) + 6000-9999 (some segments)
-    # We generate the common ones and let yfinance validate
-    print("  Generating HKEX symbol list (0001-4999 + selected range)...")
+    # Source 1: HKEX official stock list CSV
+    try:
+        url = "https://www.hkex.com.hk/eng/services/trading/securities/securitieslists/ListOfSecurities.xlsx"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=20)
+        r.raise_for_status()
+        df = pd.read_excel(io.BytesIO(r.content), header=2)
+        # Column with stock codes
+        code_col = None
+        for c in df.columns:
+            if "stock" in str(c).lower() or "code" in str(c).lower():
+                code_col = c
+                break
+        if code_col is None:
+            code_col = df.columns[0]
+        codes = df[code_col].dropna().astype(str).str.strip()
+        codes = codes[codes.str.match(r'^\d+$')]
+        for code in codes:
+            padded = code.zfill(4)
+            all_syms.add(f"{padded}.HK")
+        print(f"  HKEX official: {len(all_syms)} symbols")
+    except Exception as e:
+        print(f"  HKEX xlsx failed: {e}")
 
-    # Known active HK stocks — major ones hardcoded as seed
-    known = [
-        "0700","0005","0941","1299","0388","2318","0939","1398","3988","0883",
-        "0011","0001","0002","0003","0004","0006","0012","0016","0017","0019",
-        "0023","0027","0066","0083","0101","0151","0175","0267","0291","0293",
-        "0330","0358","0386","0390","0392","0669","0688","0762","0823","0857",
-        "0868","0881","0960","0981","1038","1044","1093","1109","1113","1177",
-        "1211","1288","1336","1339","1378","1810","1876","1928","1997","2007",
-        "2018","2020","2269","2313","2319","2328","2333","2382","2388","2518",
-        "2628","2688","3690","3692","3968","6098","6160","6690","6862","9618",
-        "9888","9961","9988","9999","0003","0008","0013","0014","0020","0025",
-        "0031","0033","0036","0038","0041","0045","0050","0051","0052","0053",
-        "0054","0055","0056","0057","0058","0059","0060","0062","0063","0065",
-        "0068","0069","0070","0071","0072","0073","0075","0076","0077","0078",
-        "0079","0080","0081","0082","0084","0085","0086","0087","0088","0089",
-        "0090","0091","0092","0093","0094","0095","0096","0097","0098","0099",
-        "0100","0102","0103","0104","0105","0106","0107","0108","0110","0111",
-        "0112","0113","0114","0115","0116","0117","0118","0119","0120","0121",
-        "0122","0123","0124","0125","0126","0127","0128","0129","0130","0131",
-        "0132","0133","0135","0136","0137","0138","0139","0140","0141","0142",
-        "0143","0144","0145","0146","0147","0148","0150","0152","0153","0154",
-        "0155","0156","0157","0158","0159","0160","0161","0163","0164","0165",
-        "0166","0168","0169","0171","0172","0173","0174","0176","0177","0178",
-        "0179","0180","0182","0183","0184","0185","0186","0187","0188","0189",
-        "0190","0191","0193","0194","0195","0196","0197","0198","0199","0200",
-    ]
+    # Source 2: Wikipedia Hang Seng constituents
+    if len(all_syms) < 50:
+        try:
+            r = requests.get(
+                "https://en.wikipedia.org/wiki/Hang_Seng_Index",
+                headers={"User-Agent": "Mozilla/5.0"}, timeout=10
+            )
+            tables = pd.read_html(io.StringIO(r.text))
+            for t in tables:
+                for col in t.columns:
+                    if "code" in str(col).lower() or "tick" in str(col).lower():
+                        for val in t[col].dropna().astype(str):
+                            val = val.strip().replace(" ","")
+                            if val.isdigit():
+                                all_syms.add(f"{val.zfill(4)}.HK")
+            print(f"  After Wikipedia: {len(all_syms)} symbols")
+        except Exception as e:
+            print(f"  Wikipedia failed: {e}")
 
-    # Format as Yahoo Finance symbols: XXXX.HK
-    symbols = [f"{s}.HK" for s in known]
-    print(f"  {len(symbols)} HK symbols to scan")
+    # Source 3: Generate numeric range — HKEX codes 0001-4999
+    # This ensures we always have a good universe
+    print("  Adding numeric range 0001-4999...")
+    for i in range(1, 5000):
+        all_syms.add(f"{str(i).zfill(4)}.HK")
+
+    # Also add 6000-9999 range (H-shares, red chips)
+    for i in range(6000, 10000):
+        all_syms.add(f"{str(i).zfill(4)}.HK")
+
+    symbols = sorted(list(all_syms))
+    print(f"  Total HK symbols to try: {len(symbols)}")
     return symbols
 
 
@@ -88,11 +107,11 @@ def calc_rs(sym, start, end):
         from_high = round(((c_now - high_52w) / high_52w)*100, 1)
 
         try:
-            info     = ticker.info
+            info       = ticker.info
             mktcap_hkd = round(info.get("marketCap", 0) / 1e8, 1) if info.get("marketCap") else None
-            sector   = info.get("sector",   "N/A")
-            industry = info.get("industry", "N/A")
-            name     = info.get("longName", sym.replace(".HK",""))
+            sector     = info.get("sector",   "N/A")
+            industry   = info.get("industry", "N/A")
+            name       = info.get("longName", sym.replace(".HK",""))
         except Exception:
             mktcap_hkd = None
             sector     = "N/A"
@@ -103,14 +122,14 @@ def calc_rs(sym, start, end):
             "sym":      sym.replace(".HK", ""),
             "name":     name,
             "score":    score,
-            "price":    round(c_now, 2),
+            "price":    round(c_now, 3),
             "mktcap":   mktcap_hkd,
             "sector":   sector,
             "industry": industry,
             "r1m":      ret_1m,
             "r3m":      ret_3m,
             "r12m":     ret_12m,
-            "h52":      round(high_52w, 2),
+            "h52":      round(high_52w, 3),
             "fh":       from_high,
         }
     except Exception:
@@ -180,7 +199,7 @@ def send_email(excel_path, df, date_str):
 
     exc_count = len(df[df["rs"] >= 90])
     str_count = len(df[(df["rs"] >= 80) & (df["rs"] < 90)])
-    subject   = f"HK Market RS Rating — {date_str} | {exc_count} Exceptional stocks"
+    subject   = f"HK Market RS Rating — {date_str} | {len(df)} stocks | {exc_count} Exceptional"
 
     top10_rows = ""
     for _, row in df.head(10).iterrows():
@@ -190,11 +209,12 @@ def send_email(excel_path, df, date_str):
         star     = "★" if row["rs"] >= 90 else "◆"
         c12      = "#1D9E75" if row["r12m"] >= 0 else "#E24B4A"
         mktcap_s = f"HK${row['mktcap']}Cr" if row["mktcap"] else "N/A"
+        nm       = str(row["name"])[:25] if row["name"] else row["sym"]
         top10_rows += (
             "<tr>"
             f'<td style="padding:8px 10px;border-bottom:1px solid #222">{int(row["rank"])}</td>'
             f'<td style="padding:8px 10px;border-bottom:1px solid #222;font-weight:600">{row["sym"]}</td>'
-            f'<td style="padding:8px 10px;border-bottom:1px solid #222;font-size:11px;color:#aaa">{row["name"][:25]}</td>'
+            f'<td style="padding:8px 10px;border-bottom:1px solid #222;font-size:11px;color:#aaa">{nm}</td>'
             f'<td style="padding:8px 10px;border-bottom:1px solid #222">'
             f'<span style="background:{bg};color:{fg};padding:2px 8px;border-radius:5px;font-weight:700">'
             f'{row["rs"]} {star}</span></td>'
@@ -238,7 +258,7 @@ def send_email(excel_path, df, date_str):
         </table>
       </div>
       <p style="color:#444;font-size:12px;text-align:center;margin:0">
-        Full Excel attached · Code, Company Name, Sector, Industry, Mkt Cap · Auto every Saturday 10 AM IST
+        Full Excel attached · Auto every Saturday 10 AM IST
       </p>
     </div>"""
 
@@ -274,22 +294,46 @@ def main():
     end     = datetime.today()
     start   = end - timedelta(days=420)
     results = []
-    failed  = []
+    failed  = 0
 
     for i, sym in enumerate(symbols):
+        # Stop if approaching 80 min limit to ensure email still sends
+        if (time.time() - t0) > 4500:
+            print(f"  Time limit approaching — stopping at {i} symbols")
+            break
+
         r = calc_rs(sym, start, end)
         if r:
             results.append(r)
         else:
-            failed.append(sym)
-        if (i + 1) % 50 == 0:
+            failed += 1
+
+        if (i + 1) % 100 == 0:
             elapsed = time.time() - t0
             rem     = (elapsed / (i + 1)) * (len(symbols) - i - 1) / 60
-            print(f"  [{i+1}/{len(symbols)}] {len(results)} ok | {len(failed)} skipped | ~{rem:.0f} min left")
-        time.sleep(0.3)
+            print(f"  [{i+1}/{len(symbols)}] {len(results)} ok | {failed} skipped | ~{rem:.0f} min left")
+
+        time.sleep(0.2)
+
+    print(f"\n  Scan complete: {len(results)} valid stocks found")
 
     if not results:
-        print("No results.")
+        print("No results — sending empty notification email")
+        # Send notification even if empty
+        if EMAIL_PASSWORD:
+            try:
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = f"HK Scan — {date_str} — No data found"
+                msg["From"]    = EMAIL_SENDER
+                msg["To"]      = EMAIL_TO
+                msg.attach(MIMEText("<p>HK scan ran but no valid stock data found. Check logs.</p>", "html"))
+                recipients = [e.strip() for e in EMAIL_TO.split(",")]
+                with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                    server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+                    server.sendmail(EMAIL_SENDER, recipients, msg.as_string())
+                print("  Empty notification sent.")
+            except Exception as e:
+                print(f"  Email failed: {e}")
         return
 
     df       = pd.DataFrame(results)
@@ -300,12 +344,11 @@ def main():
     df["rank"] = range(1, len(df) + 1)
     df["strength"] = df["rs"].apply(
         lambda r: "Exceptional" if r >= 90 else (
-            "Strong" if r >= 80 else (
-                "Average" if r >= 60 else "Weak"
-            )
+            "Strong" if r >= 80 else ("Average" if r >= 60 else "Weak")
         )
     )
 
+    # Save JSON
     records = df.to_dict(orient="records")
     payload = {
         "updated":     datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -323,7 +366,7 @@ def main():
     build_excel(df, xl)
     send_email(xl, df, date_str)
 
-    print(f"\nDone! {len(results)} stocks | {len(failed)} skipped | {round((time.time()-t0)/60,1)} min")
+    print(f"\nDone! {len(results)} stocks | {round((time.time()-t0)/60,1)} min")
 
 if __name__ == "__main__":
     main()
