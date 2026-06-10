@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NSE RS Rating Dashboard</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0a0a0a;color:#e0e0e0;min-height:100vh}
+header{background:#111;border-bottom:1px solid #1e1e1e;padding:1rem 1.5rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
+.logo{font-size:1.05rem;font-weight:500;color:#fff}
+.updated{font-size:12px;color:#444}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;padding:1rem 1.5rem}
+.stat{background:#111;border:1px solid #1e1e1e;border-radius:8px;padding:.75rem 1rem}
+.stat-label{font-size:11px;color:#555;margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em}
+.stat-val{font-size:22px;font-weight:500;color:#fff}
+.controls{padding:.75rem 1.5rem;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+input[type=text]{background:#111;border:1px solid #2a2a2a;color:#e0e0e0;padding:8px 12px;border-radius:6px;font-size:13px;width:200px;outline:none}
+input[type=text]:focus{border-color:#444}
+.filters{display:flex;gap:8px;flex-wrap:wrap}
+.fb{background:#111;border:1px solid #2a2a2a;color:#666;padding:6px 14px;border-radius:20px;font-size:12px;cursor:pointer;transition:.15s}
+.fb:hover{border-color:#444;color:#ccc}
+.fb.active{background:#1a1a1a;border-color:#555;color:#fff}
+.fb.fe.active{background:#0a2218;border-color:#085041;color:#9FE1CB}
+.fb.fs.active{background:#0e1f07;border-color:#27500A;color:#C0DD97}
+.fb.fa.active{background:#1f1200;border-color:#633806;color:#FAC775}
+.fb.fw.active{background:#1f0a0a;border-color:#791F1F;color:#F7C1C1}
+.tw{overflow-x:auto;padding:0 1.5rem 2rem}
+table{width:100%;border-collapse:collapse;font-size:13px;min-width:680px}
+th{background:#111;color:#555;padding:10px 12px;text-align:left;font-weight:500;border-bottom:1px solid #1e1e1e;cursor:pointer;user-select:none;white-space:nowrap}
+th:hover{color:#aaa}
+th.sa::after{content:" ▲"}th.sd::after{content:" ▼"}
+td{padding:9px 12px;border-bottom:1px solid #141414;white-space:nowrap}
+tr:hover td{background:#0f0f0f}
+.badge{padding:3px 10px;border-radius:5px;font-weight:700;font-size:12px}
+.p{color:#1D9E75}.n{color:#E24B4A}
+.hidden{display:none}
+.loader{text-align:center;padding:3rem;color:#444}
+.empty{text-align:center;padding:3rem;color:#444;font-size:14px}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">NSE RS Rating Dashboard</div>
+  <div class="updated" id="upd">Loading...</div>
+</header>
+<div class="stats">
+  <div class="stat"><div class="stat-label">Total Stocks</div><div class="stat-val" id="s0">—</div></div>
+  <div class="stat"><div class="stat-label">Exceptional 90+</div><div class="stat-val" id="s1" style="color:#1D9E75">—</div></div>
+  <div class="stat"><div class="stat-label">Strong 80–89</div><div class="stat-val" id="s2" style="color:#639922">—</div></div>
+  <div class="stat"><div class="stat-label">Weak &lt;40</div><div class="stat-val" id="s3" style="color:#E24B4A">—</div></div>
+</div>
+<div class="controls">
+  <input type="text" id="search" placeholder="Search symbol..." oninput="render()">
+  <div class="filters">
+    <button class="fb active" onclick="flt('all',this)">All</button>
+    <button class="fb fe"     onclick="flt('exc',this)">Exceptional 90+</button>
+    <button class="fb fs"     onclick="flt('str',this)">Strong 80+</button>
+    <button class="fb fa"     onclick="flt('avg',this)">Average 60–79</button>
+    <button class="fb fw"     onclick="flt('wk', this)">Weak &lt;60</button>
+    <button class="fb"        onclick="flt('n52',this)">Near 52W High (≤5%)</button>
+  </div>
+</div>
+<div class="tw">
+  <div class="loader" id="loader">Loading data...</div>
+  <table id="tbl" style="display:none">
+    <thead><tr>
+      <th onclick="srt('rank')">Rank</th>
+      <th onclick="srt('sym')">Symbol</th>
+      <th onclick="srt('rs')">RS Rating</th>
+      <th>Strength</th>
+      <th onclick="srt('price')">Price</th>
+      <th onclick="srt('r1m')">1M %</th>
+      <th onclick="srt('r3m')">3M %</th>
+      <th onclick="srt('r12m')">12M %</th>
+      <th onclick="srt('fh')">From 52W High</th>
+    </tr></thead>
+    <tbody id="tb"></tbody>
+  </table>
+  <div class="empty hidden" id="emp">No stocks match.</div>
+</div>
+<script>
+let ALL=[],CF='all',SC='rank',SD=1;
+function rs(r){
+  if(r>=90)return{bg:'#085041',fg:'#9FE1CB',lb:'Exceptional'};
+  if(r>=80)return{bg:'#27500A',fg:'#C0DD97',lb:'Strong'};
+  if(r>=60)return{bg:'#633806',fg:'#FAC775',lb:'Average'};
+  return{bg:'#791F1F',fg:'#F7C1C1',lb:'Weak'};
+}
+fetch('data.json?t='+Date.now()).then(r=>r.json()).then(d=>{
+  document.getElementById('loader').style.display='none';
+  document.getElementById('tbl').style.display='';
+  if(!d.stocks||!d.stocks.length){
+    document.getElementById('emp').classList.remove('hidden');
+    document.getElementById('emp').textContent='Pehla scan Saturday raat hoga — tab tak wait karo!';
+    document.getElementById('upd').textContent='No data yet';
+    return;
+  }
+  ALL=d.stocks;
+  document.getElementById('upd').textContent='Updated: '+(d.updated_ist||d.updated);
+  document.getElementById('s0').textContent=d.total.toLocaleString();
+  document.getElementById('s1').textContent=ALL.filter(s=>s.rs>=90).length;
+  document.getElementById('s2').textContent=ALL.filter(s=>s.rs>=80&&s.rs<90).length;
+  document.getElementById('s3').textContent=ALL.filter(s=>s.rs<40).length;
+  render();
+}).catch(()=>document.getElementById('loader').textContent='Error loading. Refresh karo.');
+function flt(f,b){
+  CF=f;
+  document.querySelectorAll('.fb').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');
+  render();
+}
+function srt(c){
+  if(SC===c)SD*=-1;else{SC=c;SD=1;}
+  document.querySelectorAll('th').forEach(t=>t.classList.remove('sa','sd'));
+  const ths=['rank','sym','rs','_','price','r1m','r3m','r12m','fh'];
+  const el=document.querySelectorAll('th')[ths.indexOf(c)];
+  if(el)el.classList.add(SD===1?'sa':'sd');
+  render();
+}
+function render(){
+  const q=document.getElementById('search').value.trim().toLowerCase();
+  let data=ALL.filter(s=>{
+    if(q&&!s.sym.toLowerCase().includes(q))return false;
+    if(CF==='exc') return s.rs>=90;
+    if(CF==='str') return s.rs>=80;
+    if(CF==='avg') return s.rs>=60&&s.rs<80;
+    if(CF==='wk')  return s.rs<60;
+    if(CF==='n52') return s.fh>=-5;
+    return true;
+  });
+  data.sort((a,b)=>{
+    let av=a[SC],bv=b[SC];
+    if(typeof av==='string')return av.localeCompare(bv)*SD;
+    return(av-bv)*SD;
+  });
+  const tb=document.getElementById('tb');
+  const em=document.getElementById('emp');
+  if(!data.length){tb.innerHTML='';em.classList.remove('hidden');return;}
+  em.classList.add('hidden');
+  tb.innerHTML=data.map(s=>{
+    const st=rs(s.rs);
+    const star=s.rs>=90?' ★':(s.rs>=80?' ◆':'');
+    const c1=s.r1m>=0?'p':'n',c3=s.r3m>=0?'p':'n',c12=s.r12m>=0?'p':'n',cf=s.fh>=0?'p':'n';
+    return '<tr>'
+      +'<td>'+s.rank+'</td>'
+      +'<td style="font-weight:500">'+s.sym+'</td>'
+      +'<td><span class="badge" style="background:'+st.bg+';color:'+st.fg+'">'+s.rs+star+'</span></td>'
+      +'<td style="color:'+st.bg+';font-weight:500">'+st.lb+'</td>'
+      +'<td>₹'+s.price+'</td>'
+      +'<td class="'+c1+'">'+s.r1m+'%</td>'
+      +'<td class="'+c3+'">'+s.r3m+'%</td>'
+      +'<td class="'+c12+'">'+s.r12m+'%</td>'
+      +'<td class="'+cf+'">'+s.fh+'%</td>'
+      +'</tr>';
+  }).join('');
+}
+</script>
+</body>
+</html>
